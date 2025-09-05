@@ -1,0 +1,9 @@
+node_modules/
+.pnpm-store/
+.pnp.cjs
+.pnp.loader.mjs
+.next/
+out/
+dist/
+.env.local
+.DS_Store

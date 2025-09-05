@@ -1,0 +1,1 @@
+export default function Home(){return (<div><h1 className='text-2xl font-bold'>BrewOps Starter</h1><p>Go to Admin → Templates to create a checklist, Work to start a run, Review to approve.</p></div>)}
