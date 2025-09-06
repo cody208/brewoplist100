@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase-browser'
 
+type Template = { id: string; name: string }
 type Section = { id: string; name: string; sort_order: number }
 type Item = {
   id: string
@@ -21,22 +22,35 @@ type ResponseRow = {
 }
 type Run = {
   id: string
-  status: string
+  template_id: string
+  template: Template | null
+  status: 'submitted' | 'approved' | 'in_progress'
   created_at: string
   responses: ResponseRow[]
 }
 
 export default function ReviewPage() {
   const [runs, setRuns] = useState<Run[]>([])
+  const [templates, setTemplates] = useState<Template[]>([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
+  // Filters
+  const [status, setStatus] = useState<'all' | Run['status']>('all')
+  const [from, setFrom] = useState<string>('') // YYYY-MM-DD
+  const [to, setTo] = useState<string>('')     // YYYY-MM-DD
+  const [templateId, setTemplateId] = useState<'all' | string>('all')
+
   async function load() {
     setLoading(true)
-    const { data, error } = await supabase
+
+    // Load runs (with joined template + responses → items → sections)
+    const { data: runsData, error: runsErr } = await supabase
       .from('runs')
       .select(`
         id,
+        template_id,
+        template:templates ( id, name ),
         status,
         created_at,
         responses (
@@ -50,27 +64,46 @@ export default function ReviewPage() {
             prompt,
             type,
             sort_order,
-            section:sections (
-              id,
-              name,
-              sort_order
-            )
+            section:sections ( id, name, sort_order )
           )
         )
       `)
       .order('created_at', { ascending: false })
-      .limit(50)
+      .limit(300)
 
-    if (error) {
-      console.error(error)
+    if (runsErr) {
+      console.error(runsErr)
       setRuns([])
     } else {
-      setRuns((data as any) || [])
+      setRuns((runsData as any) || [])
     }
+
+    // Load templates for filter dropdown
+    const { data: tplData, error: tplErr } = await supabase
+      .from('templates')
+      .select('id,name')
+      .order('name', { ascending: true })
+
+    if (!tplErr) setTemplates(tplData || [])
+
     setLoading(false)
   }
 
   useEffect(() => { load() }, [])
+
+  // Apply filters client-side
+  const filteredRuns = useMemo(() => {
+    const fromTs = from ? new Date(from + 'T00:00:00').getTime() : null
+    const toTs   = to   ? new Date(to   + 'T23:59:59').getTime() : null
+    return runs.filter(r => {
+      const t = new Date(r.created_at).getTime()
+      if (status !== 'all' && r.status !== status) return false
+      if (templateId !== 'all' && r.template_id !== templateId) return false
+      if (fromTs && t < fromTs) return false
+      if (toTs && t > toTs) return false
+      return true
+    })
+  }, [runs, status, from, to, templateId])
 
   function toggle(id: string) {
     setExpanded((e) => ({ ...e, [id]: !e[id] }))
@@ -85,16 +118,118 @@ export default function ReviewPage() {
     load()
   }
 
+  // CSV export of filtered runs
+  function downloadCSV() {
+    const rows: string[][] = []
+    rows.push([
+      'template_name',
+      'run_id',
+      'run_created_at',
+      'run_status',
+      'section',
+      'item_prompt',
+      'item_type',
+      'response_value',
+      'response_created_at',
+    ])
+
+    for (const run of filteredRuns) {
+      const tplName = run.template?.name ?? ''
+      for (const r of run.responses || []) {
+        const sectionName = r.item?.section?.name ?? ''
+        const prompt = r.item?.prompt ?? ''
+        const type = r.item?.type ?? ''
+        let value = ''
+        if (type === 'yesno') value = r.value_text ?? ''
+        else if (type === 'number') value = (r.value_number ?? '').toString()
+        else if (type === 'checkbox') value = r.value_json?.checked ? 'Checked' : 'Unchecked'
+        else if (type === 'select') value = r.value_text ?? JSON.stringify(r.value_json ?? '')
+        else value = r.value_text ?? JSON.stringify(r.value_json ?? r.value_number ?? '')
+        rows.push([
+          tplName,
+          run.id,
+          new Date(run.created_at).toISOString(),
+          run.status,
+          sectionName,
+          prompt,
+          type,
+          value,
+          new Date(r.created_at).toISOString(),
+        ])
+      }
+    }
+
+    const csv = rows
+      .map(cols =>
+        cols.map(c => `"${(c ?? '').toString().replace(/"/g, '""')}"`).join(',')
+      )
+      .join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    a.download = `brewops-review-${ts}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  function clearFilters() {
+    setStatus('all')
+    setFrom('')
+    setTo('')
+    setTemplateId('all')
+  }
+
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Review</h1>
 
+      {/* Filters */}
+      <div className="card">
+        <div className="grid md:grid-cols-6 gap-3 items-end">
+          <div className="flex flex-col">
+            <label className="text-xs text-gray-500 mb-1">Template</label>
+            <select className="input" value={templateId} onChange={e=>setTemplateId(e.target.value)}>
+              <option value="all">All templates</option>
+              {templates.map(t => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col">
+            <label className="text-xs text-gray-500 mb-1">Status</label>
+            <select className="input" value={status} onChange={e => setStatus(e.target.value as any)}>
+              <option value="all">All</option>
+              <option value="submitted">Submitted</option>
+              <option value="approved">Approved</option>
+              <option value="in_progress">In Progress</option>
+            </select>
+          </div>
+          <div className="flex flex-col">
+            <label className="text-xs text-gray-500 mb-1">From</label>
+            <input className="input" type="date" value={from} onChange={e=>setFrom(e.target.value)} />
+          </div>
+          <div className="flex flex-col">
+            <label className="text-xs text-gray-500 mb-1">To</label>
+            <input className="input" type="date" value={to} onChange={e=>setTo(e.target.value)} />
+          </div>
+          <div className="flex gap-2 md:col-span-2">
+            <button className="btn" onClick={clearFilters}>Clear</button>
+            <button className="btn btn-primary" onClick={downloadCSV}>Export CSV</button>
+          </div>
+        </div>
+      </div>
+
       {loading && <p>Loading…</p>}
-      {!loading && runs.length === 0 && (
-        <p className="text-sm text-gray-600">No runs yet.</p>
+      {!loading && filteredRuns.length === 0 && (
+        <p className="text-sm text-gray-600">No runs match the current filters.</p>
       )}
 
-      {runs.map((run) => (
+      {filteredRuns.map((run) => (
         <RunRow
           key={run.id}
           run={run}
@@ -121,7 +256,6 @@ function RunRow({
   onApprove: () => void
   onReopen: () => void
 }) {
-  // Group responses by section and sort sections/items by sort_order
   const grouped = useMemo(() => {
     const bySection: Record<string, { section: Section | null; rows: ResponseRow[] }> = {}
     for (const r of run.responses || []) {
@@ -131,11 +265,8 @@ function RunRow({
       bySection[key].rows.push(r)
     }
     const groups = Object.values(bySection)
-
     groups.sort((a, b) => (a.section?.sort_order ?? 9999) - (b.section?.sort_order ?? 9999))
-    for (const g of groups) {
-      g.rows.sort((a, b) => (a.item?.sort_order ?? 9999) - (b.item?.sort_order ?? 9999))
-    }
+    for (const g of groups) g.rows.sort((a, b) => (a.item?.sort_order ?? 9999) - (b.item?.sort_order ?? 9999))
     return groups
   }, [run.responses])
 
@@ -149,10 +280,11 @@ function RunRow({
 
   return (
     <div className="card space-y-3">
-      {/* Header Row (compact) */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-0.5">
-          <div className="font-semibold">Run {run.id.slice(0, 8)}</div>
+          <div className="font-semibold">
+            {run.template?.name ? `${run.template.name} — ` : ''}Run {run.id.slice(0, 8)}
+          </div>
           <div className="text-xs text-gray-500">
             {new Date(run.created_at).toLocaleString()} •{' '}
             <span className={statusColor}>{run.status}</span> • {count} responses
@@ -170,7 +302,6 @@ function RunRow({
         </div>
       </div>
 
-      {/* Expanded detail */}
       {expanded && (
         <div className="space-y-4">
           {grouped.map((g, idx) => (
