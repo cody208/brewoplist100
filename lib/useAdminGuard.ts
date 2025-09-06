@@ -9,33 +9,29 @@ const authSb = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
-/**
- * Allows only users whose profile role is admin/manager.
- * Your schema: profiles(user_id uuid, role_id uuid) -> roles(id uuid, slug text, name text)
- */
 export function useAdminGuard() {
   const [ok, setOk] = useState<boolean | null>(null)
 
   useEffect(() => {
     ;(async () => {
-      // 1) must have a Supabase Auth session
       const { data: { session } } = await authSb.auth.getSession()
       if (!session) { setOk(false); return }
 
-      // 2) read profile + role (via FK join syntax)
       const { data: prof, error } = await browserSb
         .from('profiles')
-        .select('user_id, roles:role_id ( slug, name )')
+        .select('user_id, roles:role_id ( id, name, role, role_name )')
         .eq('user_id', session.user.id)
         .maybeSingle()
 
       if (error || !prof) { setOk(false); return }
 
-      const roleKey =
-        prof.roles?.slug ??
-        (prof.roles?.name ? prof.roles.name.toLowerCase() : null)
+      // 👇 normalize roles to a single object
+      const rAny = Array.isArray((prof as any).roles) ? (prof as any).roles[0] : (prof as any).roles
+      const roleName = String(rAny?.name ?? rAny?.role ?? rAny?.role_name ?? '')
+        .toLowerCase()
+        .trim()
 
-      setOk(roleKey === 'admin' || roleKey === 'manager')
+      setOk(roleName === 'admin' || roleName === 'manager')
     })()
   }, [])
 

@@ -14,16 +14,9 @@ type ProfileRow = {
   user_id: string
   full_name: string | null
   role_id: string | null
-  roles: { id: string; slug: string | null; name: string | null } | null
+  roles: { id: string; name?: string | null; role?: string | null; role_name?: string | null } | null
 }
-
-type Employee = {
-  id: string
-  code: string
-  full_name: string
-  department: string | null
-  active: boolean
-}
+type Employee = { id: string; code: string; full_name: string; department: string | null; active: boolean }
 
 export default function AdminUsersPage() {
   const ok = useAdminGuard()
@@ -34,28 +27,38 @@ export default function AdminUsersPage() {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [loading, setLoading] = useState(false)
 
-  // Employees form (PIN)
   const [empForm, setEmpForm] = useState({ code:'', full_name:'', department:'', pin:'' })
-
-  // Admin/Manager create form (email/password)
   const [userForm, setUserForm] = useState({ email:'', password:'', full_name:'', role:'manager' as 'admin'|'manager' })
 
   async function load() {
-    setLoading(true)
-    const [{ data: p }, { data: e }] = await Promise.all([
-      sbBrowser
-        .from('profiles')
-        .select('user_id, full_name, role_id, roles:role_id ( id, slug, name )')
-        .order('full_name', { ascending: true }),
-      sbBrowser
-        .from('employees')
-        .select('id, code, full_name, department, active')
-        .order('full_name', { ascending: true }),
-    ])
-    setProfiles(p || [])
-    setEmployees(e || [])
-    setLoading(false)
-  }
+  setLoading(true)
+  const [{ data: p }, { data: e }] = await Promise.all([
+    sbBrowser
+      .from('profiles')
+      .select('user_id, full_name, role_id, roles:role_id ( id, name, role, role_name )')
+      .order('full_name', { ascending: true }),
+    sbBrowser
+      .from('employees')
+      .select('id, code, full_name, department, active')
+      .order('full_name', { ascending: true }),
+  ])
+
+  // 👇 normalize roles to a single object (or null)
+  const normalizedProfiles = (p || []).map((row: any) => {
+    const r = Array.isArray(row.roles) ? row.roles[0] : row.roles
+    return {
+      user_id: row.user_id as string,
+      full_name: (row.full_name ?? null) as string | null,
+      role_id: (row.role_id ?? null) as string | null,
+      roles: (r ?? null) as { id: string; name?: string | null; role?: string | null; role_name?: string | null } | null,
+    }
+  })
+
+  setProfiles(normalizedProfiles)
+  setEmployees(e || [])
+  setLoading(false)
+}
+
   useEffect(() => { load() }, [])
 
   // --- Employees (PIN) ---
@@ -73,7 +76,6 @@ export default function AdminUsersPage() {
       })
       .select('id')
       .single()
-
     if (error || !data) return alert(error?.message || 'Failed to create employee')
 
     const { error: err2 } = await sbBrowser.rpc('set_employee_pin', { emp_id: data.id, pin: empForm.pin })
@@ -107,10 +109,7 @@ export default function AdminUsersPage() {
 
     const res = await fetch('/api/admin/create-user', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'authorization': `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json', 'authorization': `Bearer ${token}` },
       body: JSON.stringify({
         email: userForm.email.trim(),
         password: userForm.password,
@@ -126,21 +125,25 @@ export default function AdminUsersPage() {
     alert('User created!')
   }
 
-  // --- Change a user's role (by slug) ---
-  async function changeRole(userId: string, roleSlug: 'admin'|'manager'|'employee') {
-    const { data: role, error: roleErr } = await sbBrowser
+  // --- Change a user's role by NAME/ROLE/ROLE_NAME ---
+  async function changeRole(userId: string, roleKey: 'admin'|'manager'|'employee') {
+    const { data: roles, error } = await sbBrowser
       .from('roles')
-      .select('id')
-      .eq('slug', roleSlug)
-      .maybeSingle()
-    if (roleErr || !role?.id) return alert('Role not found')
+      .select('id, name, role, role_name')
+    if (error || !roles) return alert('Failed to load roles')
 
-    const { error } = await sbBrowser
+    const wanted = roleKey.toLowerCase()
+    const match = roles.find((x:any) =>
+      String(x.name ?? x.role ?? x.role_name ?? '').toLowerCase().trim() === wanted
+    )
+    if (!match?.id) return alert('Role not found')
+
+    const { error: upErr } = await sbBrowser
       .from('profiles')
-      .update({ role_id: role.id })
+      .update({ role_id: match.id })
       .eq('user_id', userId)
+    if (upErr) return alert(upErr.message)
 
-    if (error) return alert(error.message)
     load()
   }
 
@@ -171,26 +174,30 @@ export default function AdminUsersPage() {
           <button className="btn" onClick={load} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
         </div>
         <ul className="space-y-2">
-          {profiles.map(p => (
-            <li key={p.user_id} className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
-              <div>
-                <div className="font-medium">{p.full_name || p.user_id.slice(0,8)}</div>
-                <div className="text-xs text-gray-500">{p.user_id}</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <label className="text-sm">Role</label>
-                <select
-                  className="input"
-                  value={(p.roles?.slug || p.roles?.name?.toLowerCase() || 'employee')}
-                  onChange={e => changeRole(p.user_id, e.target.value as any)}
-                >
-                  <option value="admin">admin</option>
-                  <option value="manager">manager</option>
-                  <option value="employee">employee</option>
-                </select>
-              </div>
-            </li>
-          ))}
+          {profiles.map(p => {
+            const r = (p.roles || {}) as any
+            const currentRole = String(r.name ?? r.role ?? r.role_name ?? 'employee').toLowerCase()
+            return (
+              <li key={p.user_id} className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
+                <div>
+                  <div className="font-medium">{p.full_name || p.user_id.slice(0,8)}</div>
+                  <div className="text-xs text-gray-500">{p.user_id}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm">Role</label>
+                  <select
+                    className="input"
+                    value={currentRole}
+                    onChange={e => changeRole(p.user_id, e.target.value as any)}
+                  >
+                    <option value="admin">admin</option>
+                    <option value="manager">manager</option>
+                    <option value="employee">employee</option>
+                  </select>
+                </div>
+              </li>
+            )
+          })}
           {!profiles.length && <li className="text-sm text-gray-500">No profiles yet.</li>}
         </ul>
       </div>

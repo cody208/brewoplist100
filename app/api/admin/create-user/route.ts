@@ -24,21 +24,21 @@ export async function POST(req: Request) {
     }
     const callerId = userData.user.id
 
-    // Verify caller role (profiles.user_id -> roles.slug)
+    // Verify caller role via profiles.role_id -> roles.(name|role|role_name)
     const { data: callerProf, error: profErr } = await SRV
       .from('profiles')
-      .select('user_id, roles:role_id ( slug )')
+      .select('user_id, roles:role_id ( id, name, role, role_name )')
       .eq('user_id', callerId)
       .maybeSingle()
-    if (profErr || !callerProf) {
-      return NextResponse.json({ ok:false, error:'Forbidden' }, { status: 403 })
-    }
-    const callerRole = callerProf.roles?.slug
-    if (!['admin','manager'].includes(callerRole || '')) {
+    if (profErr || !callerProf) return NextResponse.json({ ok:false, error:'Forbidden' }, { status: 403 })
+
+    const r = (callerProf.roles || {}) as any
+    const callerRole = String(r.name ?? r.role ?? r.role_name ?? '').toLowerCase().trim()
+    if (!['admin','manager'].includes(callerRole)) {
       return NextResponse.json({ ok:false, error:'Forbidden' }, { status: 403 })
     }
 
-    // Parse payload
+    // Parse input
     const { email, password, full_name, role } = await req.json() as {
       email: string
       password: string
@@ -60,27 +60,27 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok:false, error: createErr?.message || 'Failed to create user' }, { status: 400 })
     }
 
-    // Find role_id by slug
-    const { data: roleRow, error: roleErr } = await SRV
+    // Resolve role_id in code (supports any of the 3 columns)
+    const { data: allRoles, error: rolesErr } = await SRV
       .from('roles')
-      .select('id')
-      .eq('slug', role)
-      .maybeSingle()
-    if (roleErr || !roleRow?.id) {
-      return NextResponse.json({ ok:false, error:'Role not found' }, { status: 400 })
-    }
+      .select('id, name, role, role_name')
+    if (rolesErr || !allRoles) return NextResponse.json({ ok:false, error:'Roles lookup failed' }, { status: 400 })
 
-    // Upsert into profiles with user_id + role_id
+    const wanted = role.toLowerCase()
+    const match = allRoles.find((x:any) =>
+      String(x.name ?? x.role ?? x.role_name ?? '').toLowerCase().trim() === wanted
+    )
+    if (!match?.id) return NextResponse.json({ ok:false, error:'Role not found' }, { status: 400 })
+
+    // Upsert profile
     const { error: upErr } = await SRV
       .from('profiles')
       .upsert({
         user_id: created.user.id,
         full_name: full_name || null,
-        role_id: roleRow.id,
+        role_id: match.id,
       }, { onConflict: 'user_id' })
-    if (upErr) {
-      return NextResponse.json({ ok:false, error: upErr.message }, { status: 400 })
-    }
+    if (upErr) return NextResponse.json({ ok:false, error: upErr.message }, { status: 400 })
 
     return NextResponse.json({ ok:true, user_id: created.user.id })
   } catch (e:any) {
