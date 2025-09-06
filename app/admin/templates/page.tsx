@@ -3,6 +3,29 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase-browser'
+import { createClient } from '@supabase/supabase-js'
+const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
+
+function useAdminGuard() {
+  const [ok, setOk] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    ;(async () => {
+      const { data: { session } } = await sb.auth.getSession()
+      if (!session) { setOk(false); return }
+      const { data: profs } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', session.user.id)
+        .maybeSingle()
+      const role = profs?.role
+      setOk(role === 'admin' || role === 'manager')
+    })()
+  }, [])
+
+  return ok
+}
+
 
 type Template = { id: string; name: string; is_active: boolean; created_at: string }
 
