@@ -1,48 +1,102 @@
 'use client'
+
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabase-browser'
 
-type Template = { id:string, name:string, frequency:string, version:number, is_active:boolean }
+type Template = { id: string; name: string; is_active: boolean; created_at: string }
 
-export default function TemplatesPage(){
-  const [templates,setTemplates]=useState<Template[]>([])
-  const [name,setName]=useState(''); const [frequency,setFrequency]=useState('daily')
+export default function AdminTemplatesPage() {
+  const [templates, setTemplates] = useState<Template[]>([])
+  const [newName, setNewName] = useState('')
+  const [newActive, setNewActive] = useState(true)
+  const [saving, setSaving] = useState(false)
 
-  async function load(){
-    const {data}=await supabase.from('templates').select('*').order('created_at',{ascending:false})
-    setTemplates(data||[])
-  }
-  useEffect(()=>{load()},[])
-
-  async function createTemplate(){
-    if(!name) return
-    await supabase.from('templates').insert({name,frequency,version:1,is_active:true})
-    setName(''); load()
+  async function load() {
+    const { data } = await supabase
+      .from('templates')
+      .select('id,name,is_active,created_at')
+      .order('created_at', { ascending: false })
+    setTemplates(data || [])
   }
 
-  return (<div className="space-y-6">
-    <h1 className="text-2xl font-bold">Admin · Templates</h1>
-    <div className="card space-y-3">
-      <h2 className="section-title">Create Template</h2>
-      <div className="grid sm:grid-cols-3 gap-3">
-        <input className="input" placeholder="Template name" value={name} onChange={e=>setName(e.target.value)} />
-        <select className="input" value={frequency} onChange={e=>setFrequency(e.target.value)}>
-          <option value="daily">Daily</option><option value="weekly">Weekly</option>
-          <option value="monthly">Monthly</option><option value="adhoc">Ad-hoc</option>
-        </select>
-        <button className="btn btn-primary" onClick={createTemplate}>Create</button>
+  useEffect(() => { load() }, [])
+
+  async function createTemplate() {
+    if (!newName.trim()) return alert('Enter a template name')
+    setSaving(true)
+    const { error } = await supabase
+      .from('templates')
+      .insert({ name: newName.trim(), is_active: newActive })
+    setSaving(false)
+    if (error) return alert(error.message)
+    setNewName('')
+    setNewActive(true)
+    load()
+  }
+
+  async function toggleActive(t: Template) {
+    await supabase.from('templates').update({ is_active: !t.is_active }).eq('id', t.id)
+    load()
+  }
+
+  async function remove(id: string) {
+    if (!confirm('Delete this template? This will also delete its sections/items.')) return
+    await supabase.from('templates').delete().eq('id', id)
+    load()
+  }
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-2xl font-bold">Admin · Templates</h1>
+
+      {/* Create new */}
+      <div className="card space-y-3">
+        <h2 className="section-title">New template</h2>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            className="input flex-1"
+            placeholder="Template name (e.g., Brewhouse – End of Day)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+          />
+          <label className="inline-flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={newActive}
+              onChange={(e) => setNewActive(e.target.checked)}
+            />
+            <span>Active</span>
+          </label>
+          <button className="btn btn-primary" disabled={saving} onClick={createTemplate}>
+            {saving ? 'Saving…' : 'Create'}
+          </button>
+        </div>
+      </div>
+
+      {/* List */}
+      <div className="card">
+        <h2 className="section-title">Templates</h2>
+        {!templates.length && <p className="text-sm text-gray-600">No templates yet.</p>}
+        <ul className="divide-y">
+          {templates.map((t) => (
+            <li key={t.id} className="flex items-center justify-between py-3">
+              <div className="space-y-1">
+                <div className="font-medium">{t.name}</div>
+                <div className="text-xs text-gray-500">{t.id.slice(0, 8)} • {new Date(t.created_at).toLocaleString()}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={t.is_active} onChange={() => toggleActive(t)} />
+                  <span>{t.is_active ? 'Active' : 'Inactive'}</span>
+                </label>
+                <Link className="btn" href={`/admin/templates/${t.id}`}>Edit</Link>
+                <button className="btn" onClick={() => remove(t.id)}>Delete</button>
+              </div>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
-
-    <div className="card">
-      <h2 className="section-title">Templates</h2>
-      <table className="w-full text-sm">
-        <thead><tr className="text-left"><th className="py-2">Name</th><th>Frequency</th><th>Version</th></tr></thead>
-        <tbody>
-          {templates.map(t=>(<tr key={t.id} className="border-t"><td className="py-2">{t.name}</td><td>{t.frequency}</td><td>{t.version}</td></tr>))}
-          {!templates.length && <tr><td className="py-3" colSpan={3}>No templates yet.</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  </div>)
+  )
 }
