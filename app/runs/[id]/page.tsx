@@ -53,6 +53,23 @@ function Field({item, runId}:{item:Item, runId:string}){
       <button className="btn" onClick={()=>save('Yes')}>Yes</button>
       <button className="btn" onClick={()=>save('No')}>No</button>
     </div>)}
+    {item.type==='checkbox' && (
+  <label className="inline-flex items-center gap-2">
+    <input
+      type="checkbox"
+      className="h-4 w-4"
+      checked={!!val}
+      onChange={async (e) => {
+        const checked = e.target.checked
+        setVal(checked)
+        const payload:any = { run_id: runId, item_id: item.id, value_json: { checked } }
+        await supabase.from('responses').insert(payload)
+      }}
+    />
+    <span>Checked</span>
+  </label>
+)}
+
     {item.type==='number' && (<input className="input" type="number" value={val} onChange={e=>setVal(Number(e.target.value))} onBlur={()=>save(Number(val))} />)}
     {item.type==='text' && (<input className="input" value={val} onChange={e=>setVal(e.target.value)} onBlur={()=>save(val)} />)}
     {item.type==='select' && (<select className="input" value={val} onChange={e=>save(e.target.value)}>
