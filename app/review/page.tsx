@@ -29,47 +29,61 @@ type Run = {
 export default function ReviewPage() {
   const [runs, setRuns] = useState<Run[]>([])
   const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
-  useEffect(() => {
-    ;(async () => {
-      setLoading(true)
-      const { data, error } = await supabase
-        .from('runs')
-        .select(`
+  async function load() {
+    setLoading(true)
+    const { data, error } = await supabase
+      .from('runs')
+      .select(`
+        id,
+        status,
+        created_at,
+        responses (
           id,
-          status,
+          value_text,
+          value_number,
+          value_json,
           created_at,
-          responses (
+          item:items (
             id,
-            value_text,
-            value_number,
-            value_json,
-            created_at,
-            item:items (
+            prompt,
+            type,
+            sort_order,
+            section:sections (
               id,
-              prompt,
-              type,
-              sort_order,
-              section:sections (
-                id,
-                name,
-                sort_order
-              )
+              name,
+              sort_order
             )
           )
-        `)
-        .order('created_at', { ascending: false })
-        .limit(25)
+        )
+      `)
+      .order('created_at', { ascending: false })
+      .limit(50)
 
-      if (error) {
-        console.error(error)
-        setRuns([])
-      } else {
-        setRuns((data as any) || [])
-      }
-      setLoading(false)
-    })()
-  }, [])
+    if (error) {
+      console.error(error)
+      setRuns([])
+    } else {
+      setRuns((data as any) || [])
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [])
+
+  function toggle(id: string) {
+    setExpanded((e) => ({ ...e, [id]: !e[id] }))
+  }
+
+  async function approve(id: string) {
+    await supabase.from('runs').update({ status: 'approved' }).eq('id', id)
+    load()
+  }
+  async function reopen(id: string) {
+    await supabase.from('runs').update({ status: 'in_progress' }).eq('id', id)
+    load()
+  }
 
   return (
     <div className="space-y-6">
@@ -81,93 +95,113 @@ export default function ReviewPage() {
       )}
 
       {runs.map((run) => (
-        <RunCard key={run.id} run={run} />
+        <RunRow
+          key={run.id}
+          run={run}
+          expanded={!!expanded[run.id]}
+          onToggle={() => toggle(run.id)}
+          onApprove={() => approve(run.id)}
+          onReopen={() => reopen(run.id)}
+        />
       ))}
     </div>
   )
 }
 
-function RunCard({ run }: { run: Run }) {
-  // Group responses by section and sort sections/items by their sort_order
+function RunRow({
+  run,
+  expanded,
+  onToggle,
+  onApprove,
+  onReopen,
+}: {
+  run: Run
+  expanded: boolean
+  onToggle: () => void
+  onApprove: () => void
+  onReopen: () => void
+}) {
+  // Group responses by section and sort sections/items by sort_order
   const grouped = useMemo(() => {
     const bySection: Record<string, { section: Section | null; rows: ResponseRow[] }> = {}
-
     for (const r of run.responses || []) {
       const sect = r.item?.section || null
-      const sectKey = sect?.id || 'no-section'
-      if (!bySection[sectKey]) bySection[sectKey] = { section: sect, rows: [] }
-      bySection[sectKey].rows.push(r)
+      const key = sect?.id || 'no-section'
+      if (!bySection[key]) bySection[key] = { section: sect, rows: [] }
+      bySection[key].rows.push(r)
     }
-
     const groups = Object.values(bySection)
 
-    // Sort sections by sort_order (nulls last)
-    groups.sort((a, b) => {
-      const ao = a.section?.sort_order ?? 9999
-      const bo = b.section?.sort_order ?? 9999
-      return ao - bo
-    })
-
-    // Sort each group's items by item.sort_order
+    groups.sort((a, b) => (a.section?.sort_order ?? 9999) - (b.section?.sort_order ?? 9999))
     for (const g of groups) {
-      g.rows.sort((a, b) => {
-        const ao = a.item?.sort_order ?? 9999
-        const bo = b.item?.sort_order ?? 9999
-        return ao - bo
-      })
+      g.rows.sort((a, b) => (a.item?.sort_order ?? 9999) - (b.item?.sort_order ?? 9999))
     }
-
     return groups
   }, [run.responses])
 
+  const count = run.responses?.length || 0
+  const statusColor =
+    run.status === 'approved'
+      ? 'text-green-700'
+      : run.status === 'submitted'
+      ? 'text-blue-700'
+      : 'text-gray-700'
+
   return (
     <div className="card space-y-3">
-      <div className="flex items-center justify-between">
-        <div>
+      {/* Header Row (compact) */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-0.5">
           <div className="font-semibold">Run {run.id.slice(0, 8)}</div>
           <div className="text-xs text-gray-500">
-            {new Date(run.created_at).toLocaleString()} • {run.status}
+            {new Date(run.created_at).toLocaleString()} •{' '}
+            <span className={statusColor}>{run.status}</span> • {count} responses
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {run.status !== 'approved' ? (
+            <button className="btn btn-primary" onClick={onApprove}>Approve</button>
+          ) : (
+            <button className="btn" onClick={onReopen}>Reopen</button>
+          )}
+          <button className="btn" onClick={onToggle}>
+            {expanded ? 'Collapse' : 'Expand'}
+          </button>
         </div>
       </div>
 
-      {grouped.map((g, idx) => (
-        <div key={g.section?.id || `sec-${idx}`} className="space-y-2">
-          <h3 className="font-medium">
-            {g.section?.name || 'General'}
-          </h3>
-          <ul className="space-y-1">
-            {g.rows.map((r) => (
-              <li
-                key={r.id}
-                className="flex items-start justify-between rounded border p-2"
-              >
-                <div className="pr-3">
-                  <div className="text-sm">
-                    <span className="font-medium">
-                      {r.item?.prompt || 'Item'}
-                    </span>
-                    :{' '}
-                    <ValueText
-                      type={r.item?.type || 'text'}
-                      value_text={r.value_text}
-                      value_number={r.value_number}
-                      value_json={r.value_json}
-                    />
-                  </div>
-                  <div className="text-[11px] text-gray-500">
-                    {r.item?.type || 'text'} •{' '}
-                    {new Date(r.created_at).toLocaleTimeString()}
-                  </div>
-                </div>
-              </li>
-            ))}
-            {g.rows.length === 0 && (
-              <li className="text-sm text-gray-500">No responses in this section.</li>
-            )}
-          </ul>
+      {/* Expanded detail */}
+      {expanded && (
+        <div className="space-y-4">
+          {grouped.map((g, idx) => (
+            <div key={g.section?.id || `sec-${idx}`} className="space-y-2">
+              <h3 className="font-medium">{g.section?.name || 'General'}</h3>
+              <ul className="space-y-1">
+                {g.rows.map((r) => (
+                  <li key={r.id} className="rounded border p-2">
+                    <div className="text-sm">
+                      <span className="font-medium">{r.item?.prompt || 'Item'}</span>
+                      {': '}
+                      <ValueText
+                        type={r.item?.type || 'text'}
+                        value_text={r.value_text}
+                        value_number={r.value_number}
+                        value_json={r.value_json}
+                      />
+                    </div>
+                    <div className="text-[11px] text-gray-500">
+                      {r.item?.type || 'text'} • {new Date(r.created_at).toLocaleTimeString()}
+                    </div>
+                  </li>
+                ))}
+                {g.rows.length === 0 && (
+                  <li className="text-sm text-gray-500">No responses in this section.</li>
+                )}
+              </ul>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   )
 }
@@ -183,7 +217,6 @@ function ValueText({
   value_number: number | null
   value_json: any
 }) {
-  // Friendly display per type
   if (type === 'yesno') {
     if (value_text === 'Yes' || value_text === 'No') return <span>{value_text}</span>
   }
@@ -196,11 +229,8 @@ function ValueText({
   }
   if (type === 'select') {
     if (typeof value_text === 'string' && value_text) return <span>{value_text}</span>
-    // some implementations may store select in value_json; handle gracefully
     if (value_json && typeof value_json === 'object') return <span>{JSON.stringify(value_json)}</span>
   }
-
-  // Fallbacks
   if (value_text) return <span>{value_text}</span>
   if (typeof value_number === 'number') return <span>{value_number}</span>
   if (value_json != null) return <span>{JSON.stringify(value_json)}</span>
