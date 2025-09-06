@@ -42,17 +42,47 @@ export default function RunPage(){
 }
 
 function Field({item, runId}:{item:Item, runId:string}){
-  const [val,setVal]=useState<any>('')         // holds current selection/value for highlight
+  const [val,setVal]=useState<any>('')          // current UI value
   const [saving,setSaving]=useState(false)
 
-  async function save(v:any){
+  // Load existing response so the UI reflects current answer
+  useEffect(()=>{(async()=>{
+    const { data } = await supabase
+      .from('responses')
+      .select('value_text,value_number,value_json')
+      .eq('run_id', runId)
+      .eq('item_id', item.id)
+      .maybeSingle()
+
+    if (data) {
+      if (data.value_text != null) setVal(data.value_text)
+      else if (data.value_number != null) setVal(data.value_number)
+      else if (data.value_json != null) {
+        // checkbox convention: { checked: boolean }
+        if (item.type === 'checkbox' && typeof data.value_json?.checked === 'boolean') {
+          setVal(!!data.value_json.checked)
+        } else {
+          setVal(data.value_json)
+        }
+      }
+    }
+  })()},[item.id, runId, item.type])
+
+  async function upsertValue(v:any){
     setVal(v)
     setSaving(true)
-    const payload:any = { run_id: runId, item_id: item.id }
+
+    // Build upsert payload (only set one of the value_* columns)
+    const payload:any = { run_id: runId, item_id: item.id, value_text: null, value_number: null, value_json: null }
     if (typeof v === 'number') payload.value_number = v
     else if (typeof v === 'string') payload.value_text = v
     else payload.value_json = v
-    await supabase.from('responses').insert(payload)
+
+    // Upsert on (run_id, item_id) — requires the unique index we added
+    await supabase
+      .from('responses')
+      .upsert(payload, { onConflict: 'run_id,item_id' })
+
     setSaving(false)
   }
 
@@ -60,12 +90,12 @@ function Field({item, runId}:{item:Item, runId:string}){
     <div className="space-y-1">
       <div className="text-sm font-medium">{item.prompt}</div>
 
-      {/* YES / NO as radio-style buttons with highlight */}
+      {/* YES / NO with selected highlight */}
       {item.type==='yesno' && (
         <div className="flex gap-2 items-center">
           <button
             type="button"
-            onClick={()=>save('Yes')}
+            onClick={()=>upsertValue('Yes')}
             className={[
               "px-4 py-2 rounded-md border transition",
               val === 'Yes'
@@ -77,7 +107,7 @@ function Field({item, runId}:{item:Item, runId:string}){
           </button>
           <button
             type="button"
-            onClick={()=>save('No')}
+            onClick={()=>upsertValue('No')}
             className={[
               "px-4 py-2 rounded-md border transition",
               val === 'No'
@@ -98,14 +128,7 @@ function Field({item, runId}:{item:Item, runId:string}){
             type="checkbox"
             className="h-4 w-4"
             checked={!!val}
-            onChange={async (e) => {
-              const checked = e.target.checked
-              setVal(checked)
-              setSaving(true)
-              const payload:any = { run_id: runId, item_id: item.id, value_json: { checked } }
-              await supabase.from('responses').insert(payload)
-              setSaving(false)
-            }}
+            onChange={(e) => upsertValue({ checked: e.target.checked })}
           />
           <span>Checked</span>
           {saving && <span className="text-xs text-gray-500">saving…</span>}
@@ -119,7 +142,7 @@ function Field({item, runId}:{item:Item, runId:string}){
           type="number"
           value={val}
           onChange={e=>setVal(Number(e.target.value))}
-          onBlur={()=>save(Number(val))}
+          onBlur={()=>upsertValue(Number(val))}
         />
       )}
 
@@ -129,13 +152,13 @@ function Field({item, runId}:{item:Item, runId:string}){
           className="input"
           value={val}
           onChange={e=>setVal(e.target.value)}
-          onBlur={()=>save(val)}
+          onBlur={()=>upsertValue(val)}
         />
       )}
 
       {/* Select (uses config.options JSON array) */}
       {item.type==='select' && (
-        <select className="input" value={val} onChange={e=>save(e.target.value)}>
+        <select className="input" value={val} onChange={e=>upsertValue(e.target.value)}>
           <option value="">Select…</option>
           {(item.config?.options||[]).map((o:string)=>(
             <option key={o} value={o}>{o}</option>
