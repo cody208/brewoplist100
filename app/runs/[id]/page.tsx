@@ -60,3 +60,20 @@ function Field({item, runId}:{item:Item, runId:string}){
     </select>)}
   </div>)
 }
+{item.type==='checkbox' && (
+  <label className="inline-flex items-center gap-2">
+    <input
+      type="checkbox"
+      className="h-4 w-4"
+      checked={!!val}
+      onChange={async (e) => {
+        const checked = e.target.checked
+        setVal(checked)
+        const payload:any = { run_id: runId, item_id: item.id, value_json: { checked } }
+        await supabase.from('responses').insert(payload)
+      }}
+    />
+    <span>Checked</span>
+  </label>
+)}
+
